@@ -268,30 +268,33 @@ export async function closeDay(
 export async function ensureClosedDates(): Promise<string[]> {
   const today = todayJakarta()
   const closed: string[] = []
-  // scan last 14 days
-  for (let i = 1; i <= 14; i++) {
-    const date = addDaysJakarta(today, -i)
-    const [hasOrders, hasZ] = await Promise.all([
-      db.order.count({ where: { businessDate: date }, take: 1 }).then((c) => c > 0),
-      db.dailyReport.findFirst({ where: { businessDate: date, kind: 'Z' }, select: { id: true } }),
-    ])
-    if (hasOrders && !hasZ) {
-      const snapshot = await computeDayReport(date)
-      snapshot.countedCash = snapshot.expectedCash
-      snapshot.variance = 0
-      await db.dailyReport.create({
-        data: {
-          businessDate: date,
-          kind: 'Z',
-          status: 'CLOSED',
-          snapshot: snapshot as never,
-          isAutoClosed: true,
-          closedAt: new Date(),
-        },
-      })
-      await db.heldOrder.deleteMany({ where: { businessDate: date } })
-      closed.push(date)
-    }
+  // scan last 14 days in TWO queries (pooled-connection friendly — no 28-roundtrip loop)
+  const since = addDaysJakarta(today, -14)
+  const [orderDates, zRows] = await Promise.all([
+    db.order.groupBy({ by: ['businessDate'], where: { businessDate: { gte: since, lt: today } } }),
+    db.dailyReport.findMany({
+      where: { kind: 'Z', businessDate: { gte: since, lt: today } },
+      select: { businessDate: true },
+    }),
+  ])
+  const zSet = new Set(zRows.map((z) => z.businessDate))
+  const unclosed = orderDates.map((o) => o.businessDate).filter((d) => !zSet.has(d)).sort()
+  for (const date of unclosed) {
+    const snapshot = await computeDayReport(date)
+    snapshot.countedCash = snapshot.expectedCash
+    snapshot.variance = 0
+    await db.dailyReport.create({
+      data: {
+        businessDate: date,
+        kind: 'Z',
+        status: 'CLOSED',
+        snapshot: snapshot as never,
+        isAutoClosed: true,
+        closedAt: new Date(),
+      },
+    })
+    await db.heldOrder.deleteMany({ where: { businessDate: date } })
+    closed.push(date)
   }
   return closed
 }

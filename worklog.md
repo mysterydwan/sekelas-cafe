@@ -241,3 +241,36 @@ Full audit vs SPEC.md via 4 parallel domain audits (public, staff ops, master da
 - POS cart autosave is per-device localStorage (not server HeldOrder-lite draft) — deliberate at this scale; held orders remain the cross-session park mechanism.
 - Payment-mix split itemization needs a DTO addition (deferred — itemized per-payment rows exist in DAILY_PACK export).
 - Staff console remains Indonesian-only by design (worklog §4.6).
+
+---
+
+## 6. Production Deployment (Supabase + GitHub + Vercel)
+
+### 6.1 Database — local SQLite → Supabase Postgres (ap-southeast-1)
+- Supabase project **"Sekelas Cafe"** (`fumgdqntpqngcfgkhncg`, Singapore — lowest latency to Indonesia; Postgres 17).
+- Connection reality of this environment: the direct `db.*.supabase.co:5432` host is **IPv6-only** (sandbox has no global IPv6 route) → all access goes through the **Supavisor pooler** `aws-1-ap-southeast-1.pooler.supabase.com` (the `aws-0` cluster shares DNS but has no tenant binding for this project — "tenant/user not found"; `aws-1` is the correct cluster).
+- `postgres` role password could not be rotated through the pooler (PATCH `db_pass` did not propagate), so a dedicated **`sekelas` login role** was created via the management-API SQL endpoint (`CREATE ROLE … LOGIN BYPASSRLS` + `GRANT USAGE, CREATE ON SCHEMA public`), which the pooler authenticates correctly.
+- Migration path: `provider = "postgresql"` in `prisma/schema.prisma` (schema was written Postgres-ready — cuid ids, JSON snapshots, no SQLite column types), `prisma db push` via the **session pooler (:5432)**, seed re-run (`bun prisma/seed.ts`) — 5 users, 3 categories, 18 products, 18 stock items, 14 recipes, 12 orders, reports/audit seeded.
+- Runtime URLs: serverless uses the **transaction pooler (:6543, `pgbouncer=true`, `connection_limit=1`)**; the sandbox dev server uses the session pooler.
+- Local `db/custom.db` **deleted** (with the whole `/db` folder — snapshot writes are fail-safe try/catch and simply no-op on read-only serverless filesystems).
+
+### 6.2 Repository — GitHub `mysterydwan/sekelas-cafe`
+- Fresh single-commit history (248 files, ~42k lines): the complete product — `src/`, `prisma/`, `public/` (incl. PWA icons/manifest/sw), `mini-services/realtime`, `SPEC.md`, `worklog.md`, `README.md`, `.env.example`.
+- `.gitignore` excludes: all env/secret files (`**/.env*` with `!.env.example`), build/runtime residue (`.next/`, `*.log`, `tsconfig.tsbuildinfo`, `.vercel/`), database residue (`db/`, `*.db`, `*.sqlite`), and ALL agent/sandbox artifacts (`agent-ctx/`, `tool-results/`, `tests/`, `download/`, `upload/`, `examples/`, `skills/`, `Caddyfile`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`) — **`worklog.md` stays tracked by design**.
+- Verified zero PATs / secret links in the tree before the first commit (pattern scan `ghp_|sbp_|vcp_|onetimesecret`).
+- Push uses a per-invocation `http.extraheader` Authorization — **no PAT is stored in `.git/config`** (verified post-push).
+
+### 6.3 Secrets vaulting (survives a sandbox reset)
+- **GitHub repository secrets** (8, libsodium-sealed via API): `GH_PAT`, `SUPABASE_PAT`, `VERCEL_PAT`, `SUPABASE_DB_URL_SESSION`, `SUPABASE_DB_URL_TRANSACTION`, `SUPABASE_PROJECT_REF`, `AUTH_SECRET`, `REALTIME_SECRET`.
+- **Vercel encrypted environment variables** (8, all targets): `DATABASE_URL` (tx pooler), `AUTH_SECRET`, `REALTIME_SECRET`, `NEXT_PUBLIC_REALTIME_URL` (empty — see 6.4), `SUPABASE_PROJECT_REF`, plus the vault `GITHUB_PAT` / `SUPABASE_PAT` / `VERCEL_PAT`.
+
+### 6.4 Vercel deployment — Singapore
+- Project `sekelas-cafe` (framework Next.js). The account has no Vercel GitHub App → deployed via CLI direct upload (`vercel deploy --prod --token …`), which also avoids storing credentials.
+- **Region matters**: the default function region (iad1) put the DB round-trip at ~700 ms/query (dashboard 73 s!). Redeployed with **`--regions sin1`** → ~35 ms/query, dashboard ~1 s. Production URL: **https://sekelas-cafe-five.vercel.app**
+- `ensureClosedDates` optimized from a 28-query day-loop to 2 aggregate queries (grouped order dates vs existing Z set) — pooled-connection friendly.
+- Realtime on serverless: `NEXT_PUBLIC_REALTIME_URL=""` **disables WS entirely** (empty-string-is-explicit semantics; unset falls back to the sandbox gateway) — every surface uses its existing polling fallback; the disconnect banner and topbar dot hide cleanly instead of showing a permanent false alarm.
+
+### 6.5 Live verification (production URL)
+- Routes 200: `/` `/track` `/track/[code]` `/board` `/login` `/offline` + `/api/public/{menu,settings,board}` + `/manifest.webmanifest` + `/sw.js`.
+- Storefront renders live Supabase data (3 categories, 18 products, prices), Google Maps iframe, language switcher; login → admin dashboard with real KPIs (Rp 209.000 / 6 pesanan / 17 item), low-stock banner (Cup 22oz), expected-cash chip (report.viewAll gated); `/board` shows SEDANG DISIAPKAN + SIAP DIAMBIL zones from live data; `/track/SKC-005` renders the status timeline. Zero page errors, zero console errors.
+- Demo accounts seeded in production DB: admin / kasir1 / kasir2 / barista1 / barista2 — `password123` (PINs 1234/1111/2222/3333/4444). **Rotate these before real use.**

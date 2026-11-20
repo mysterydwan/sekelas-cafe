@@ -9,12 +9,13 @@ const listeners = new Map<string, Set<(payload: never) => void>>()
 const statusListeners = new Set<(connected: boolean) => void>()
 
 /**
- * Realtime endpoint. Default: the sandbox gateway proxy. On hosts without a
- * socket.io service (e.g. serverless deploys) leave NEXT_PUBLIC_REALTIME_URL
- * unset-or-empty → the app skips WS entirely and every surface falls back to
- * its polling interval (SPEC: offline tolerance).
+ * Realtime endpoint. Unset → the sandbox gateway proxy default. Set-but-EMPTY
+ * (NEXT_PUBLIC_REALTIME_URL="") → realtime explicitly disabled (e.g. serverless
+ * hosts without a socket service) → every surface falls back to its polling
+ * interval (SPEC: offline tolerance).
  */
-export const REALTIME_URL = process.env.NEXT_PUBLIC_REALTIME_URL || '/?XTransformPort=3030'
+const RAW_REALTIME_URL = process.env.NEXT_PUBLIC_REALTIME_URL
+export const REALTIME_URL = RAW_REALTIME_URL === undefined ? '/?XTransformPort=3030' : RAW_REALTIME_URL
 export const REALTIME_ENABLED = REALTIME_URL.trim() !== ''
 
 function getSocket(): Socket {
