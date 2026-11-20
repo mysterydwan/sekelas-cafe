@@ -1,0 +1,284 @@
+// Sekelas Cafe — POS & Cafe Operations
+// SQLite now, Postgres/Supabase-ready later: cuid ids, JSON snapshots, no SQLite-specific column types.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // Supabase (ap-southeast-1) — migrated from SQLite; cuid ids + JSON snapshots were Postgres-ready
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(cuid())
+  name        String
+  username    String    @unique
+  passwordHash String
+  pin         String? // 4-6 digits, quick login on shared tablets
+  role        String // ADMIN | CASHIER | BARISTA
+  grants      Json? // string[] override of role bundle (grants-not-roles)
+  isActive    Boolean   @default(true)
+  isTraining  Boolean   @default(false)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  orders        Order[]        @relation("OrderCashier")
+  prepared      Order[]        @relation("OrderPreparer")
+  served        Order[]        @relation("OrderServer")
+  payments      Payment[]      @relation("PaymentVerifier")
+  heldOrders    HeldOrder[]
+  stockMovements StockMovement[]
+  cashMovements CashMovement[]
+  stockCounts   StockCount[]   @relation("CountApprover")
+  dailyReports  DailyReport[]  @relation("ReportGenerator")
+  auditLogs     AuditLog[]
+}
+
+model Category {
+  id        String  @id @default(cuid())
+  name      String
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+  products  Product[]
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  name        String
+  description String?
+  imageUrl    String?
+  basePrice   Int // IDR
+  unitCost    Int? // IDR, optional, for margin reporting
+  isActive    Boolean  @default(true) // published
+  isAvailable Boolean  @default(true) // sold-out toggle
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  variantGroups VariantGroup[]
+  orderItems    OrderItem[]
+  recipes       RecipeItem[]
+}
+
+model VariantGroup {
+  id            String  @id @default(cuid())
+  productId     String
+  product       Product @relation(fields: [productId], references: [id])
+  name          String // "Ukuran", "Gula", "Topping"...
+  selectionType String  @default("SINGLE") // SINGLE | MULTI
+  isRequired    Boolean @default(false)
+  minSelect     Int     @default(0)
+  maxSelect     Int     @default(1)
+  sortOrder     Int     @default(0)
+  isActive      Boolean @default(true)
+
+  options VariantOption[]
+}
+
+model VariantOption {
+  id         String       @id @default(cuid())
+  groupId    String
+  group      VariantGroup @relation(fields: [groupId], references: [id])
+  label      String
+  priceDelta Int          @default(0) // IDR, may be 0 or negative
+  isDefault  Boolean      @default(false)
+  sortOrder  Int          @default(0)
+  isActive   Boolean      @default(true)
+}
+
+model Order {
+  id          String   @id @default(cuid())
+  code        String // SKC-001, daily sequence (unique per business date)
+  businessDate String // YYYY-MM-DD (Asia/Jakarta)
+  type        String // DINE_IN | TAKE_AWAY | DELIVERY
+  status      String // PENDING_PAYMENT | PENDING_VERIFICATION | PAID | PREPARING | READY | OUT_FOR_DELIVERY | COMPLETED | CANCELLED
+  source      String   @default("POS") // POS | PUBLIC
+  isTraining  Boolean  @default(false)
+
+  customerName     String?
+  customerPhone    String?
+  tableLabel       String?
+  deliveryLocation String?
+  courierName      String?
+  note             String?
+
+  subtotal       Int @default(0)
+  deliveryFee    Int @default(0)
+  discountTotal  Int @default(0)
+  discountReason String?
+  taxTotal       Int @default(0)
+  total          Int @default(0)
+
+  cashierId   String?
+  cashier     User?   @relation("OrderCashier", fields: [cashierId], references: [id])
+  preparedById String?
+  preparer    User?   @relation("OrderPreparer", fields: [preparedById], references: [id])
+  servedById  String?
+  server      User?   @relation("OrderServer", fields: [servedById], references: [id])
+
+  paidAt          DateTime?
+  preparingAt     DateTime?
+  readyAt         DateTime?
+  outForDeliveryAt DateTime?
+  completedAt     DateTime?
+  cancelledAt     DateTime?
+  cancelReason    String?
+  needsAck        Boolean  @default(false) // kitchen blink-until-acknowledge
+  idempotencyKey  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items   OrderItem[]
+  payments Payment[]
+
+  @@unique([businessDate, code])
+}
+
+model OrderItem {
+  id       String  @id @default(cuid())
+  orderId  String
+  order    Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String?
+  product  Product? @relation(fields: [productId], references: [id])
+  nameSnapshot String
+  qty      Int
+  unitPrice Int // resolved base + deltas at creation
+  variantSnapshot Json? // [{group, label, priceDelta}]
+  lineTotal Int
+  note     String?
+  checkedCount Int     @default(0)
+  isVoided Boolean     @default(false)
+  voidReason String?
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method    String // CASH | QRIS
+  amount    Int
+  cashReceived Int?
+  changeDue   Int?
+  qrReference String?
+  status    String   @default("CONFIRMED") // CONFIRMED | PENDING_VERIFICATION | REJECTED
+  verifiedById String?
+  verifiedBy   User?   @relation("PaymentVerifier", fields: [verifiedById], references: [id])
+  paidAt    DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+model HeldOrder {
+  id            String   @id @default(cuid())
+  label         String
+  itemsSnapshot Json // draft lines: [{productId, qty, optionIds, note}]
+  metaSnapshot  Json? // {type, tableLabel, customerName, customerPhone, deliveryLocation, note}
+  businessDate  String
+  createdById   String
+  createdBy     User     @relation(fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+}
+
+model StockItem {
+  id           String   @id @default(cuid())
+  sku          String   @unique
+  name         String
+  unit         String   @default("pcs") // gr | ml | pcs | cup | btl
+  qty          Float    @default(0)
+  lowThreshold Float    @default(0)
+  unitCost     Float    @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  movements StockMovement[]
+  recipes   RecipeItem[]
+}
+
+model RecipeItem {
+  id           String @id @default(cuid())
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stockItemId  String
+  stockItem    StockItem @relation(fields: [stockItemId], references: [id])
+  qtyPerUnit   Float
+}
+
+model StockMovement {
+  id           String   @id @default(cuid())
+  stockItemId  String
+  stockItem    StockItem @relation(fields: [stockItemId], references: [id])
+  type         String // RESTOCK_IN | SALE_DEDUCT | WASTE | ADJUSTMENT | COUNT_VARIANCE | MANUAL_OUT
+  qtyDelta     Float
+  resultingQty Float
+  refOrderId   String?
+  reason       String?
+  note         String?
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id])
+  createdAt    DateTime  @default(now())
+}
+
+model StockCount {
+  id           String   @id @default(cuid())
+  businessDate String
+  status       String   @default("DRAFT") // DRAFT | APPROVED
+  lines        Json // [{stockItemId, sku, name, unit, systemQty, countedQty, variance}]
+  approvedById String?
+  approvedBy   User?    @relation("CountApprover", fields: [approvedById], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model CashMovement {
+  id           String   @id @default(cuid())
+  businessDate String
+  type         String // OPENING_FLOAT | CASH_IN | CASH_OUT
+  amount       Int
+  reason       String?
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+  createdAt    DateTime @default(now())
+}
+
+model DailyReport {
+  id            String   @id @default(cuid())
+  businessDate  String
+  kind          String // X | Z
+  status        String   @default("CLOSED") // OPEN | CLOSED
+  snapshot      Json
+  generatedById String?
+  generatedBy   User?    @relation("ReportGenerator", fields: [generatedById], references: [id])
+  closedAt      DateTime?
+  isAutoClosed  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@unique([businessDate, kind])
+}
+
+model DailySequence {
+  businessDate String @id
+  lastNumber   Int    @default(0)
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  label     String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  key   String @id
+  value Json
+}

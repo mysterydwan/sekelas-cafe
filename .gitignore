@@ -1,0 +1,58 @@
+# --- secrets & environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- build & runtime residue ---
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+server.log
+*.log
+tsconfig.tsbuildinfo
+
+# --- dependencies ---
+node_modules/
+.pnp
+.pnp.js
+
+# --- database residue (Supabase-hosted now; local snapshots are machine-local) ---
+db/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+prisma/migrations/dev.db*
+
+# --- AI agent / sandbox metadata (worklog.md stays tracked by design) ---
+agent-ctx/
+tool-results/
+tests/
+download/
+upload/
+examples/
+.zscripts/
+.claude/
+.cursor/
+agents/
+CLAUDE.md
+.cursorrules
+AGENTS.md
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# --- agent skills & sandbox gateway config ---
+skills/
+Caddyfile
