@@ -274,3 +274,11 @@ Full audit vs SPEC.md via 4 parallel domain audits (public, staff ops, master da
 - Routes 200: `/` `/track` `/track/[code]` `/board` `/login` `/offline` + `/api/public/{menu,settings,board}` + `/manifest.webmanifest` + `/sw.js`.
 - Storefront renders live Supabase data (3 categories, 18 products, prices), Google Maps iframe, language switcher; login → admin dashboard with real KPIs (Rp 209.000 / 6 pesanan / 17 item), low-stock banner (Cup 22oz), expected-cash chip (report.viewAll gated); `/board` shows SEDANG DISIAPKAN + SIAP DIAMBIL zones from live data; `/track/SKC-005` renders the status timeline. Zero page errors, zero console errors.
 - Demo accounts seeded in production DB: admin / kasir1 / kasir2 / barista1 / barista2 — `password123` (PINs 1234/1111/2222/3333/4444). **Rotate these before real use.**
+
+### 6.6 Final production verification (after sin1 redeploy with realtime-disable fix)
+- All routes 200 incl. PWA assets (`/manifest.webmanifest`, `/sw.js`, `/icons/*`); unauthenticated `GET /api/settings` + `/api/pos/cash` correctly 401.
+- **Latency: `/api/public/menu` 0.12 s** (was 2.7 s from iad1) — Singapore function ↔ Singapore DB.
+- No false "Koneksi terputus" banner on the storefront (realtime cleanly disabled server-side, polling fallback active); zero page errors, zero console errors.
+- Browser-verified live flows: storefront menu + Maps embed; admin login → dashboard (KPIs, low-stock banner, expected-cash chip); **barista login → KDS with the gate locked** ("Terkunci — sisa 2 cup belum dicentang" on the seeded partially-checked order, keyboard-focusable cards); `/board` zones; `/track/SKC-005` timeline.
+- Repository: 2 commits on `main` at `github.com/mysterydwan/sekelas-cafe`; no PAT in `.git/config`; secrets vaulted in both GitHub (8 repo secrets) and Vercel (8 encrypted env vars).
+- Sandbox preview unaffected: dev server on :3000 runs against the same Supabase (session pooler) with realtime via the gateway.
